@@ -335,10 +335,14 @@ Both suites share the repo, so isolation is deliberate:
 - **Separate `concurrency` group** (`full-flow`) and its own nightly schedule.
 
 ### Gotchas when editing
-- **It can only run from `main`.** `on: release` / `on: pull_request` (and even
-  `workflow_dispatch`) only execute the workflow file on the **default branch** — you can't
-  validate the cascade from a feature branch the way you can dispatch `e2e.yml`. Merge
-  first, then dispatch `full-flow.yml` to see it live.
+- **The cascade can only be validated from `main`.** `full-flow-bump.yml` is `on: release`,
+  which always uses the workflow file on the **default branch**, and the `workflow_dispatch`
+  driver resolves the same way — so the release→bump→PR chain can't be exercised from a
+  feature branch the way you can dispatch `e2e.yml`. (`full-flow-cleanup.yml` is
+  `on: pull_request`, which *does* run from a PR's head branch — that's why you'll see it
+  trigger-and-skip on the very PR that adds it, which conveniently confirms the
+  `update-flow-app-` gate.) Merge first, then dispatch `full-flow.yml` to see the full
+  cascade live.
 - **It tests `@main` of both actions**, by design (post-merge / nightly confidence). To
   validate an *unmerged* action change, use `e2e.yml`'s `bump_ref` / `cleanup_ref` — the
   event cascade can't thread a per-run ref through a `release` payload.
