@@ -28,6 +28,13 @@ and never store anything of value here.
 - **Manually:** Actions tab → `e2e` → "Run workflow".
 - **Nightly:** scheduled at 07:00 UTC.
 
+## Editing or extending the tests
+
+See **[TESTING.md](./TESTING.md)** — a full maintainer's map of the suite: the design
+rules (never touch `main`, one deterministic job, self-cleaning), a step-by-step
+walkthrough, the variables passed between steps, editing gotchas, a recipe for adding new
+cases, and a debugging table of common failures.
+
 ## How this repo is configured
 
 The e2e authenticates as a **dedicated GitHub App scoped to only this repository**, with
