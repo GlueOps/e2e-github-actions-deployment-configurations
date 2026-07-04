@@ -4,7 +4,9 @@ name: e2e
 # @main of both actions against this throwaway fixture repo end to end:
 #   1. bump mints a scoped App token, edits values.yaml (comment-preserving), opens a PR
 #   2. re-running bump is idempotent (reuses the PR, no duplicate)
-#   3. cleanup (on GITHUB_TOKEN, like prod) closes a superseded PR + deletes its branch
+#   3. a SECOND app (monorepo) gets its own distinct, app-named PR
+#   4. cleanup (on GITHUB_TOKEN, like prod) closes ONLY the superseded same-app+env PR,
+#      leaving a different app (other-app/prod) and a different env (test-app/staging) open
 # Deterministic and self-cleaning: one job, no async event cascades. Safe to re-run.
 on:
   workflow_dispatch:
@@ -26,11 +28,15 @@ env:
   CONFIG_REPO: e2e-github-actions-deployment-configurations
   VALUES_PATH: apps/test-app/envs/prod/values.yaml
   SUPER_BRANCH: e2e/super
+  STAGING_BRANCH: e2e/ctrl-staging
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (for the control-PR helper script)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
       - name: "Setup: clear leftover deploy PRs + branches from prior runs"
         run: |
           set -euo pipefail
@@ -43,7 +49,9 @@ jobs:
               gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
             fi
           done
-          gh api -X DELETE "repos/$REPO/git/refs/heads/$SUPER_BRANCH" >/dev/null 2>&1 || true
+          for b in "$SUPER_BRANCH" "$STAGING_BRANCH"; do
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null 2>&1 || true
+          done
 
       - name: "Bump: open a deploy PR (mints scoped App token, edits values.yaml)"
         id: bump
@@ -103,22 +111,47 @@ jobs:
             || { echo "re-run opened a DIFFERENT PR than #$BUMP_PR"; exit 1; }
           echo "✅ bump idempotent: reused PR #$BUMP_PR"
 
-      - name: "Setup Phase B: open a superseding deploy PR (same app+env, newer)"
+      - name: "Bump a SECOND app (monorepo): other-app / prod"
+        id: bump_other
+        uses: GlueOps/github-actions-bump-deployment-tag@main
+        with:
+          ENV: prod
+          CREATE_PR: "true"
+          DEPLOYMENT_CONFIGS_REPO: ${{ env.CONFIG_REPO }}
+          DEPLOYMENT_CONFIGS_APP_NAME: other-app
+          app-id: ${{ vars.GLUEOPS_DEPLOYMENT_APP_ID }}
+          private-key: ${{ secrets.GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY }}
+
+      - name: "Assert: second app gets a distinct, APP-NAMED PR (monorepo)"
         run: |
           set -euo pipefail
-          base=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
-          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$SUPER_BRANCH" -f sha="$base" >/dev/null
-          fsha=$(gh api "repos/$REPO/contents/$VALUES_PATH?ref=$SUPER_BRANCH" --jq '.sha')
-          newc=$(printf '# GlueOps e2e test fixture\nimage:\n  repository: ghcr.io/glueops/e2e-test-app  # e2e-sentinel-comment\n  tag: "e2e-super"\n' | base64 -w0)
-          gh api -X PUT "repos/$REPO/contents/$VALUES_PATH" \
-            -f message="e2e: superseding change" -f content="$newc" -f sha="$fsha" -f branch="$SUPER_BRANCH" >/dev/null
-          marker='<!-- glueops-deploy:{"app":"test-app","env":"prod","tag":"e2e-super"} -->'
-          body=$(printf 'Superseding deploy PR for the e2e smoke test.\n\n%s\n' "$marker")
-          super=$(gh api -X POST "repos/$REPO/pulls" \
-            -f title="e2e superseding PR" -f head="$SUPER_BRANCH" -f base=main -f body="$body" --jq '.number')
-          echo "SUPER_PR=$super" >> "$GITHUB_ENV"
+          got='${{ steps.bump_other.outputs.action }}'
+          test "$got" = "created-pr" || { echo "expected created-pr for other-app, got '$got'"; exit 1; }
+          OP='${{ steps.bump_other.outputs.pr-number }}'
+          test -n "$OP"
+          obranch=$(gh api "repos/$REPO/pulls/$OP" --jq '.head.ref')
+          { echo "OTHER_PR=$OP"; echo "OTHER_BRANCH=$obranch"; } >> "$GITHUB_ENV"
+          otitle=$(gh api "repos/$REPO/pulls/$OP" --jq '.title')
+          echo "other-app PR #$OP title: $otitle"
+          # Requires the bump appName fix — without it the title uses the source repo
+          # name and would NOT contain 'other-app'.
+          case "$otitle" in
+            *"other-app"*) : ;;
+            *) echo "PR title does not name the app 'other-app' — needs the bump appName fix on @main: $otitle"; exit 1 ;;
+          esac
+          obody=$(gh api "repos/$REPO/pulls/$OP" --jq '.body // ""')
+          printf '%s' "$obody" | grep -q 'glueops-deploy:{"app":"other-app","env":"prod"' \
+            || { echo "other-app marker missing/mismatched"; exit 1; }
+          echo "✅ second app PR #$OP is distinct + titled by app name"
+
+      - name: "Setup isolation controls: superseding (same app+env) + different-env PRs"
+        run: |
+          set -euo pipefail
+          super=$(bash .github/e2e/open-deploy-pr.sh "$SUPER_BRANCH" test-app prod e2e-super)
+          ctrl=$(bash .github/e2e/open-deploy-pr.sh "$STAGING_BRANCH" test-app staging e2e-staging)
+          { echo "SUPER_PR=$super"; echo "STAGING_PR=$ctrl"; } >> "$GITHUB_ENV"
           test "$super" -gt "$BUMP_PR" || { echo "super PR #$super is not newer than bump PR #$BUMP_PR"; exit 1; }
-          echo "✅ opened superseding PR #$super"
+          echo "✅ super #$super (test-app/prod) + staging control #$ctrl (test-app/staging)"
 
       - name: "Cleanup: close superseded PRs (runs on GITHUB_TOKEN, like prod)"
         uses: GlueOps/github-actions-cleanup-deployment-prs@main
@@ -126,17 +159,27 @@ jobs:
           pr_number: ${{ env.SUPER_PR }}
           gh_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: "Assert: the earlier bump PR is closed + its branch deleted"
+      - name: "Assert: cleanup closed ONLY the same app+env older PR (isolation)"
         run: |
           set -euo pipefail
-          st=$(gh api "repos/$REPO/pulls/$BUMP_PR" --jq '.state')
-          test "$st" = "closed" || { echo "bump PR #$BUMP_PR should be closed, is '$st'"; exit 1; }
+          # superseded (test-app/prod, older) → closed + branch deleted
+          test "$(gh api "repos/$REPO/pulls/$BUMP_PR" --jq '.state')" = "closed" \
+            || { echo "superseded bump PR #$BUMP_PR should be closed"; exit 1; }
           if gh api "repos/$REPO/git/ref/heads/$BUMP_BRANCH" >/dev/null 2>&1; then
-            echo "bump branch '$BUMP_BRANCH' should have been deleted but still exists"; exit 1
+            echo "bump branch '$BUMP_BRANCH' should have been deleted"; exit 1
           fi
-          st2=$(gh api "repos/$REPO/pulls/$SUPER_PR" --jq '.state')
-          test "$st2" = "open" || { echo "super PR #$SUPER_PR should still be open, is '$st2'"; exit 1; }
-          echo "✅ cleanup: superseded PR #$BUMP_PR closed + branch deleted; #$SUPER_PR still open"
+          # trigger stays open
+          test "$(gh api "repos/$REPO/pulls/$SUPER_PR" --jq '.state')" = "open" \
+            || { echo "trigger PR #$SUPER_PR should still be open"; exit 1; }
+          # DIFFERENT APP (other-app/prod) must survive — cross-app isolation
+          test "$(gh api "repos/$REPO/pulls/$OTHER_PR" --jq '.state')" = "open" \
+            || { echo "CROSS-APP ISOLATION FAILED: other-app PR #$OTHER_PR was closed"; exit 1; }
+          gh api "repos/$REPO/git/ref/heads/$OTHER_BRANCH" >/dev/null 2>&1 \
+            || { echo "CROSS-APP ISOLATION FAILED: other-app branch was deleted"; exit 1; }
+          # DIFFERENT ENV (test-app/staging) must survive — cross-env isolation
+          test "$(gh api "repos/$REPO/pulls/$STAGING_PR" --jq '.state')" = "open" \
+            || { echo "CROSS-ENV ISOLATION FAILED: test-app/staging PR #$STAGING_PR was closed"; exit 1; }
+          echo "✅ isolation: closed only test-app/prod older PR; other-app/prod (#$OTHER_PR) + test-app/staging (#$STAGING_PR) survived"
 
       - name: "Teardown: close e2e PRs + delete branches (always)"
         if: always()
@@ -150,5 +193,7 @@ jobs:
               gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
             fi
           done
-          gh api -X DELETE "repos/$REPO/git/refs/heads/$SUPER_BRANCH" >/dev/null 2>&1 || true
+          for b in "$SUPER_BRANCH" "$STAGING_BRANCH"; do
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null 2>&1 || true
+          done
           echo "✅ teardown complete"
