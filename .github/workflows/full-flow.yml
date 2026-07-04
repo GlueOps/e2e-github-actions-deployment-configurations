@@ -19,13 +19,16 @@ name: full-flow-e2e
 on:
   workflow_dispatch:
   schedule:
-    # Nightly at 03:30 UTC. Heavier + async than the hourly deterministic suite, so it
-    # runs once a day. Always tests @main of both actions.
-    - cron: "30 3 * * *"
+    # Hourly at :30 — offset from e2e.yml's :00 so the two suites naturally run apart.
+    # They also share a concurrency group (below), so even if a scheduled run is delayed
+    # they queue one-after-another instead of overlapping. Always tests @main.
+    - cron: "30 * * * *"
 
-# Independent of the deterministic suite's `e2e` group, but serialized with itself.
+# Shared with e2e.yml so the deterministic and event-driven suites never run at the same
+# time — whichever fires first runs, the other queues. (They're also isolated by
+# fixture/branch, so this is belt-and-suspenders.)
 concurrency:
-  group: full-flow
+  group: e2e-suite
   cancel-in-progress: false
 
 permissions:
@@ -34,6 +37,7 @@ permissions:
 jobs:
   full-flow:
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # bounded so a hung wait can't hold the shared queue
     steps:
       - name: Checkout (for the orchestration scripts)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
