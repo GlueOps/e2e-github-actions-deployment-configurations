@@ -1,4 +1,4 @@
 # GlueOps end-to-end test fixture — safe to overwrite. DO NOT use for real deployments.
 image:
-  repository: ghcr.io/glueops/e2e-test-app  # e2e-sentinel-comment: this MUST survive a tag bump
-  tag: "baseline"
+  repository: ghcr.io/glueops/e2e-test-app # e2e-sentinel-comment: this MUST survive a tag bump
+  tag: "5c1b370"
