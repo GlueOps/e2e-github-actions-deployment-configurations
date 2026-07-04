@@ -25,9 +25,12 @@ on:
     # load spike, so a run may fire a few minutes late. Always tests @main.
     - cron: "0 * * * *"
 
-# Serialize runs — the job mutates shared repo state (branches / PRs).
+# Serialize runs — the job mutates shared repo state (branches / PRs). The group is
+# SHARED with full-flow.yml so the deterministic and event-driven suites never run at the
+# same time; whichever fires first runs, the other queues (they're also isolated by
+# fixture/branch — this is belt-and-suspenders).
 concurrency:
-  group: e2e
+  group: e2e-suite
   cancel-in-progress: false
 
 permissions:

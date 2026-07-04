@@ -35,8 +35,10 @@ destructive.
 3. **Self-cleaning + idempotent.** `Setup` clears leftovers from a prior (possibly failed)
    run *before* doing anything, and `Teardown` (`if: always()`) closes/deletes everything
    at the end. A run must leave the repo exactly as it found it.
-4. **Serialized.** `concurrency: { group: e2e }` ensures only one run mutates the repo at a
-   time. Never remove this — two concurrent runs would corrupt each other's PR/branch state.
+4. **Serialized.** `concurrency: { group: e2e-suite }` ensures only one run mutates the repo
+   at a time. Never remove this — two concurrent runs would corrupt each other's PR/branch
+   state. The group is **shared with `full-flow.yml`** (§11), so the deterministic and
+   event-driven suites also never run at the same time.
 5. **Assertions fail loud.** Every check is `test … || { echo "why"; exit 1; }`. A failed
    assertion must fail the job with a message that says what was expected.
 
@@ -292,7 +294,7 @@ is always a SHA fallback. This second suite fills exactly that gap — it drives
 production cascade** and asserts on it:
 
 ```
-full-flow.yml (driver: dispatch / nightly)
+full-flow.yml (driver: dispatch / hourly @ :30)
   │  mints an App-installation token, publishes a `flow-e2e-*` release  ─┐
   │                                                                      │ App-token events
   ▼                                                                      │ trigger workflows
@@ -317,7 +319,7 @@ full-flow-cleanup.yml (on: pull_request) → cleanup closes the superseded PR
 ### The pieces
 | File | Trigger | Role |
 |------|---------|------|
-| `full-flow.yml` | `workflow_dispatch` + nightly `schedule` (03:30 UTC) | Driver: mints the App token, publishes two releases, polls + asserts the cascade, tears down. |
+| `full-flow.yml` | `workflow_dispatch` + hourly `schedule` (:30) | Driver: mints the App token, publishes two releases, polls + asserts the cascade, tears down. |
 | `.github/e2e/full-flow.sh` | — | The orchestration + assertions the driver runs. |
 | `.github/e2e/full-flow-teardown.sh` | — | Resets only full-flow state (flow-app PRs/branches, `flow-e2e-*` releases/tags). Run at the start (clean slate) and via `if: always()`. |
 | `full-flow-bump.yml` | `on: release` (tags `flow-e2e-*`) | This repo playing the **app repo**: a release triggers bump. |
@@ -332,7 +334,9 @@ Both suites share the repo, so isolation is deliberate:
   so it never runs on the deterministic suite's App-authored `test-app`/`other-app` PRs.
 - **`e2e.yml`'s setup/teardown skip `*/update-flow-app-*` branches**, so the hourly run
   never closes an in-flight full-flow PR.
-- **Separate `concurrency` group** (`full-flow`) and its own nightly schedule.
+- **Shared `concurrency` group** (`e2e-suite`) with `e2e.yml` and a **staggered schedule**
+  (full-flow at :30, e2e at :00), so the two suites run one-after-another, never at once.
+  A `timeout-minutes: 30` on the driver bounds a hung run so it can't hold the shared queue.
 
 ### Gotchas when editing
 - **The cascade can only be validated from `main`.** `full-flow-bump.yml` is `on: release`,
@@ -343,22 +347,25 @@ Both suites share the repo, so isolation is deliberate:
   trigger-and-skip on the very PR that adds it, which conveniently confirms the
   `update-flow-app-` gate.) Merge first, then dispatch `full-flow.yml` to see the full
   cascade live.
-- **It tests `@main` of both actions**, by design (post-merge / nightly confidence). To
+- **It tests `@main` of both actions**, by design (post-merge / scheduled confidence). To
   validate an *unmerged* action change, use `e2e.yml`'s `bump_ref` / `cleanup_ref` — the
   event cascade can't thread a per-run ref through a `release` payload.
 - **Tags must stay valid container tags** (lowercase `[a-z0-9-]`) so `sanitizeTag` is
   identity and the marker-tag equality assertion holds. The driver derives them from
   `github.run_id` + `run_attempt` for uniqueness without `Date.now`.
 - **Async means slower + flakier than §1–§10.** Each wait polls for up to 5 min. If GitHub
-  is slow to dispatch a triggered run, a step can time out — a retry usually passes. This
-  is the cost of real fidelity, and why it's nightly, not hourly.
+  is slow to dispatch a triggered run, a step can time out — the next hourly run usually
+  passes. This is the cost of real fidelity; it runs hourly but is queued behind (never
+  concurrent with) the deterministic suite and bounded by `timeout-minutes: 30`. Because
+  the shared group keeps only one *pending* run, a piled-up hourly run can occasionally be
+  skipped — harmless at this frequency.
 - **Never point `full-flow-cleanup.yml` at all branches.** Dropping the `if` gate would let
   it fire on (and no-op across) every PR in the repo, including the deterministic suite's —
   harmless but noisy, and it muddies which suite owns what.
 
 ### Running & debugging
 - **Run it:** `gh workflow run full-flow.yml` (or Actions tab → `full-flow-e2e` → Run
-  workflow), or wait for the nightly schedule. Watch three workflows light up in order:
+  workflow), or wait for the hourly schedule (:30). Watch three workflows light up in order:
   `full-flow-e2e` → `full-flow-bump` → `full-flow-cleanup`.
 - **If it times out waiting for a deploy PR:** the release didn't trigger `full-flow-bump`.
   Check the driver used the **App token** (not `GITHUB_TOKEN`) to publish the release, and

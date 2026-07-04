@@ -31,7 +31,8 @@ There are **two suites**:
   (a `release` triggers bump → the deploy PR's `pull_request` event triggers cleanup),
   which the deterministic suite can't. It additionally proves bump computes the tag from
   the **release name** (not the SHA fallback) and that cleanup runs off a **real event**,
-  not a synchronous input. Nightly; tests `@main`. See [TESTING.md §11](./TESTING.md).
+  not a synchronous input. Hourly (offset to :30); tests `@main`, and **serialized with the
+  deterministic suite** so the two never overlap. See [TESTING.md §11](./TESTING.md).
 
 ## Running it
 
@@ -41,10 +42,11 @@ There are **two suites**:
   `cleanup_ref` set to a branch, PR (`refs/pull/N/head`), or SHA — e.g.
   `gh workflow run e2e.yml -f bump_ref=my-branch`. Defaults to `main`. See
   [TESTING.md](./TESTING.md).
-- **The event-driven full flow:** `gh workflow run full-flow.yml`, or wait for the nightly
-  run. It only runs from `main` (event-triggered workflows always do) and needs **no extra
-  credentials** — it reuses the same `GLUEOPS_DEPLOYMENT_*` App to mint an installation
-  token (an App token, unlike `GITHUB_TOKEN`, triggers the downstream workflows). See
+- **The event-driven full flow:** `gh workflow run full-flow.yml`, or wait for the hourly
+  run (:30, offset from `e2e`'s :00; the two share a concurrency group so they never
+  overlap). It only runs from `main` (event-triggered workflows always do) and needs **no
+  extra credentials** — it reuses the same `GLUEOPS_DEPLOYMENT_*` App to mint an
+  installation token (an App token, unlike `GITHUB_TOKEN`, triggers the downstream workflows). See
   [TESTING.md §11](./TESTING.md).
 
 ## Editing or extending the tests
