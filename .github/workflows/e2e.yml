@@ -59,7 +59,7 @@ jobs:
 
       - name: "Bump: open a deploy PR (mints scoped App token, edits values.yaml)"
         id: bump
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: GlueOps/github-actions-bump-deployment-tag@50f944dc6f0deedaf07276b5406148876fcabd06 # main
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -97,7 +97,7 @@ jobs:
 
       - name: "Bump again (should be idempotent — reuse the PR, no duplicate)"
         id: bump2
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: GlueOps/github-actions-bump-deployment-tag@50f944dc6f0deedaf07276b5406148876fcabd06 # main
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -117,7 +117,7 @@ jobs:
 
       - name: "Bump a SECOND app (monorepo): other-app / prod"
         id: bump_other
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: GlueOps/github-actions-bump-deployment-tag@50f944dc6f0deedaf07276b5406148876fcabd06 # main
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -170,7 +170,7 @@ jobs:
           echo "✅ super #$super (test-app/prod) + staging #$ctrl (test-app/staging) + human #$human (no marker)"
 
       - name: "Cleanup: close superseded PRs (runs on GITHUB_TOKEN, like prod)"
-        uses: GlueOps/github-actions-cleanup-deployment-prs@main
+        uses: GlueOps/github-actions-cleanup-deployment-prs@e40906815983cc20f46bd51cf1da72cb2096e267 # main
         with:
           pr_number: ${{ env.SUPER_PR }}
           gh_token: ${{ secrets.GITHUB_TOKEN }}
