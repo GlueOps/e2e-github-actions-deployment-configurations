@@ -1,0 +1,33 @@
+name: full-flow-bump
+
+# Production-faithful half of the event-driven full flow: an app repo cutting a release
+# is what triggers bump. Here THIS repo plays the app repo — when the full-flow driver
+# (full-flow.yml) publishes a `flow-e2e-*` release with an App-installation token (whose
+# events, unlike GITHUB_TOKEN's, DO trigger workflows), this fires and bump computes the
+# tag from the RELEASE NAME (not the sha fallback the deterministic e2e.yml always gets)
+# and opens a deploy PR against flow-app/prod in this same repo.
+#
+# Always runs bump@main — this suite validates merged/main behaviour through the real
+# event cascade. To validate an UNMERGED bump change, use e2e.yml's bump_ref input.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read # bump writes via its own minted App token, not GITHUB_TOKEN
+
+jobs:
+  bump:
+    # Only our synthetic full-flow releases — never a real/manual release on this repo.
+    if: startsWith(github.event.release.tag_name, 'flow-e2e-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Bump flow-app/prod from the release tag (opens a deploy PR)"
+        uses: GlueOps/github-actions-bump-deployment-tag@main
+        with:
+          ENV: prod
+          CREATE_PR: "true"
+          DEPLOYMENT_CONFIGS_REPO: ${{ github.event.repository.name }}
+          DEPLOYMENT_CONFIGS_APP_NAME: flow-app
+          app-id: ${{ vars.GLUEOPS_DEPLOYMENT_APP_ID }}
+          private-key: ${{ secrets.GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY }}

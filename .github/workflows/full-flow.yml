@@ -1,0 +1,66 @@
+name: full-flow-e2e
+
+# Event-driven end-to-end test — the async complement to the deterministic e2e.yml.
+# It drives the REAL production cascade instead of calling the actions synchronously:
+#
+#   driver publishes a release (App token)
+#      └─> full-flow-bump.yml (on: release)      -> bump opens a flow-app deploy PR (App token)
+#             └─> full-flow-cleanup.yml (on: pull_request) -> cleanup closes the superseded PR
+#
+# What this covers that e2e.yml can't:
+#   • bump computes the tag from the RELEASE NAME (semver path), not the sha[:7] fallback
+#   • cleanup is triggered by a real `pull_request` event, not a synchronous pr_number input
+#   • the App-token-triggers-workflows / GITHUB_TOKEN-doesn't property that the whole
+#     design depends on, proven live
+#
+# The token trick: the driver creates the release with an App-INSTALLATION token minted
+# from the same GLUEOPS_DEPLOYMENT_APP_ID / _PRIVATE_KEY credentials the actions use — a
+# release created with the default GITHUB_TOKEN would NOT trigger full-flow-bump. No PAT.
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 03:30 UTC. Heavier + async than the hourly deterministic suite, so it
+    # runs once a day. Always tests @main of both actions.
+    - cron: "30 3 * * *"
+
+# Independent of the deterministic suite's `e2e` group, but serialized with itself.
+concurrency:
+  group: full-flow
+  cancel-in-progress: false
+
+permissions:
+  contents: read # the App token (below) carries the write powers; GITHUB_TOKEN stays read-only
+
+jobs:
+  full-flow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the orchestration scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Mint an App-installation token. Its events trigger workflows (GITHUB_TOKEN's don't),
+      # which is exactly what makes the release -> bump -> PR -> cleanup cascade fire.
+      - name: Mint App installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.GLUEOPS_DEPLOYMENT_APP_ID }}
+          private-key: ${{ secrets.GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY }}
+
+      - name: Drive the full flow and assert the cascade
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          # Two unique, already-valid container tags (lowercase [a-z0-9-]) so sanitizeTag
+          # is identity and the deploy PR's marker tag equals the release tag exactly —
+          # which is what proves the release-name path (a sha fallback would be 7 hex chars).
+          TAG1: flow-e2e-${{ github.run_id }}-${{ github.run_attempt }}-a
+          TAG2: flow-e2e-${{ github.run_id }}-${{ github.run_attempt }}-b
+        run: bash .github/e2e/full-flow.sh
+
+      - name: Teardown (always)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/e2e/full-flow-teardown.sh

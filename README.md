@@ -23,6 +23,16 @@ and never store anything of value here.
 5. **Human/bot safety:** a marker-less PR (no `glueops-deploy` marker, standing in for a
    human or unrelated-bot PR) is **never touched** by cleanup — it stays open.
 
+There are **two suites**:
+
+- **Deterministic (`e2e.yml`)** — the five properties above, run as one synchronous job.
+  Fast, stable, hourly, and the way to validate an *unmerged* action change.
+- **Event-driven full flow (`full-flow.yml`)** — drives the **real** production cascade
+  (a `release` triggers bump → the deploy PR's `pull_request` event triggers cleanup),
+  which the deterministic suite can't. It additionally proves bump computes the tag from
+  the **release name** (not the SHA fallback) and that cleanup runs off a **real event**,
+  not a synchronous input. Nightly; tests `@main`. See [TESTING.md §11](./TESTING.md).
+
 ## Running it
 
 - **Manually:** Actions tab → `e2e` → "Run workflow".
@@ -31,6 +41,11 @@ and never store anything of value here.
   `cleanup_ref` set to a branch, PR (`refs/pull/N/head`), or SHA — e.g.
   `gh workflow run e2e.yml -f bump_ref=my-branch`. Defaults to `main`. See
   [TESTING.md](./TESTING.md).
+- **The event-driven full flow:** `gh workflow run full-flow.yml`, or wait for the nightly
+  run. It only runs from `main` (event-triggered workflows always do) and needs **no extra
+  credentials** — it reuses the same `GLUEOPS_DEPLOYMENT_*` App to mint an installation
+  token (an App token, unlike `GITHUB_TOKEN`, triggers the downstream workflows). See
+  [TESTING.md §11](./TESTING.md).
 
 ## Editing or extending the tests
 
