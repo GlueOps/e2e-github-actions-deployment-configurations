@@ -23,12 +23,41 @@ and never store anything of value here.
 - **Manually:** Actions tab → `e2e` → "Run workflow".
 - **Nightly:** scheduled at 07:00 UTC.
 
-## Required configuration (already set up)
+## How this repo is configured
 
-| Kind | Name | Purpose |
-|------|------|---------|
-| Org variable | `GLUEOPS_DEPLOYMENT_APP_ID` | App ID of the dedicated e2e test App |
-| Org secret | `GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY` | private key of that App |
-| App install | `e2e-tests-glueops-deployment-v1` | installed on this repo (contents + PR write) |
+The e2e authenticates as a **dedicated GitHub App scoped to only this repository**, with
+its credentials stored as **repo-level** variable/secret (not org-level). This keeps the
+test fully isolated: least-privilege blast radius (one throwaway repo) and immune to
+production App churn on the org-level `GLUEOPS_DEPLOYMENT_*` values.
 
-`GITHUB_TOKEN` (automatic) covers setup/teardown and the cleanup step; nothing else to store.
+| Kind | Where | Name | Value |
+|------|-------|------|-------|
+| Variable | **this repo** (Settings → Secrets and variables → Actions → Variables) | `GLUEOPS_DEPLOYMENT_APP_ID` | the App's numeric App ID |
+| Secret | **this repo** (Settings → Secrets and variables → Actions → Secrets) | `GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY` | the App's `.pem` private key |
+| App install | **this repo only** | the dedicated e2e App | Contents R/W · Pull requests R/W · Metadata RO |
+
+`GITHUB_TOKEN` (automatic) covers setup/teardown and the cleanup step — nothing else to store.
+
+### Reproducing the setup from scratch
+
+1. **Create the App** with the one-click installer:
+   <https://glueops.github.io/github-actions-bump-deployment-tag/> — enter the `GlueOps`
+   org and create the App (give it a distinct name, e.g. `e2e-tests-glueops-deployment`,
+   so it never collides with the production Deployment App). The page shows the **App ID**
+   and a one-time **private key** — keep both handy.
+2. **Install it on ONLY this repository.** On the App's install screen choose
+   **Only select repositories → `e2e-github-actions-deployment-configurations`**. Do not
+   grant it any other repo. (Permissions are already Contents + Pull requests write,
+   Metadata read.) Skipping this is the #1 cause of a `404 ... /installation` failure in
+   the bump step.
+3. **Store the credentials at the REPO level** on this repo (not org-level):
+   - Variable `GLUEOPS_DEPLOYMENT_APP_ID` = the App ID from step 1
+   - Secret `GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY` = the full `.pem` contents from step 1
+
+   > Repo-level values take precedence over any org-level variable/secret of the same
+   > name, so this fixture stays pinned to its own App regardless of what the org does.
+
+> **Why not the org-level defaults?** The two GlueOps consumer examples read the
+> *org-level* `GLUEOPS_DEPLOYMENT_*`. Reusing those here would couple the e2e to the
+> production App — re-provisioning prod (new App ID/key) would silently break this test.
+> Repo-level + single-repo install keeps the two independent.
