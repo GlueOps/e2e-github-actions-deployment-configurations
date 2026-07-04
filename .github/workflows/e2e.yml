@@ -21,7 +21,9 @@ on:
         description: "Ref of github-actions-cleanup-deployment-prs to test (branch/tag/SHA/refs/pull/N/head)"
         default: main
   schedule:
-    - cron: "0 7 * * *" # nightly 07:00 UTC (always tests @main)
+    # Hourly, at the top of the hour. GitHub can delay scheduled runs during the :00
+    # load spike, so a run may fire a few minutes late. Always tests @main.
+    - cron: "0 * * * *"
 
 # Serialize runs — the job mutates shared repo state (branches / PRs).
 concurrency:
