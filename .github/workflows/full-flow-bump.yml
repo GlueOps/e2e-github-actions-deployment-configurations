@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Bump flow-app/prod from the release tag (opens a deploy PR)"
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: GlueOps/github-actions-bump-deployment-tag@5505ab25583ca128e85bbaba0c76e52fc75b8118 # main
         with:
           ENV: prod
           CREATE_PR: "true"
