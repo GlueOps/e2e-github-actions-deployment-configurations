@@ -1,17 +1,27 @@
 name: e2e
 
-# Real-GitHub smoke test for the GlueOps Deployment actions. Exercises the merged
-# @main of both actions against this throwaway fixture repo end to end:
+# Real-GitHub smoke test for the GlueOps Deployment actions, end to end:
 #   1. bump mints a scoped App token, edits values.yaml (comment-preserving), opens a PR
 #   2. re-running bump is idempotent (reuses the PR, no duplicate)
 #   3. a SECOND app (monorepo) gets its own distinct, app-named PR
 #   4. cleanup (on GITHUB_TOKEN, like prod) closes ONLY the superseded same-app+env PR,
 #      leaving a different app (other-app/prod) and a different env (test-app/staging) open
 # Deterministic and self-cleaning: one job, no async event cascades. Safe to re-run.
+#
+# By default it tests @main of both actions. To validate an UNMERGED change, dispatch
+# with bump_ref / cleanup_ref set to a branch, tag, SHA, or PR ref (refs/pull/<N>/head) —
+# the action is checked out at that ref and run locally, so you never merge to test.
 on:
   workflow_dispatch:
+    inputs:
+      bump_ref:
+        description: "Ref of github-actions-bump-deployment-tag to test (branch/tag/SHA/refs/pull/N/head)"
+        default: main
+      cleanup_ref:
+        description: "Ref of github-actions-cleanup-deployment-prs to test (branch/tag/SHA/refs/pull/N/head)"
+        default: main
   schedule:
-    - cron: "0 7 * * *" # nightly 07:00 UTC
+    - cron: "0 7 * * *" # nightly 07:00 UTC (always tests @main)
 
 # Serialize runs — the job mutates shared repo state (branches / PRs).
 concurrency:
@@ -38,9 +48,27 @@ jobs:
       - name: Checkout (for the control-PR helper script)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Check out the actions under test at the requested refs (default: main) and run
+      # them locally via `uses: ./_actions/...`. This is how we test an unmerged branch/PR
+      # without merging — `uses:` can't take an expression, but a local path can. Note the
+      # ref's COMMITTED dist/ is what runs (the actions ship a prebuilt bundle).
+      - name: Check out bump action at the ref under test
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: GlueOps/github-actions-bump-deployment-tag
+          ref: ${{ inputs.bump_ref || 'main' }}
+          path: _actions/bump
+      - name: Check out cleanup action at the ref under test
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: GlueOps/github-actions-cleanup-deployment-prs
+          ref: ${{ inputs.cleanup_ref || 'main' }}
+          path: _actions/cleanup
+
       - name: "Setup: clear leftover e2e PRs + branches from prior runs"
         run: |
           set -euo pipefail
+          echo "Testing bump@${{ inputs.bump_ref || 'main' }}, cleanup@${{ inputs.cleanup_ref || 'main' }}"
           # Close leftover e2e PRs: deploy PRs (marker) AND control PRs (e2e/ branch,
           # incl. the marker-less human control).
           for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
@@ -59,7 +87,7 @@ jobs:
 
       - name: "Bump: open a deploy PR (mints scoped App token, edits values.yaml)"
         id: bump
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: ./_actions/bump
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -97,7 +125,7 @@ jobs:
 
       - name: "Bump again (should be idempotent — reuse the PR, no duplicate)"
         id: bump2
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: ./_actions/bump
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -117,7 +145,7 @@ jobs:
 
       - name: "Bump a SECOND app (monorepo): other-app / prod"
         id: bump_other
-        uses: GlueOps/github-actions-bump-deployment-tag@main
+        uses: ./_actions/bump
         with:
           ENV: prod
           CREATE_PR: "true"
@@ -170,7 +198,7 @@ jobs:
           echo "✅ super #$super (test-app/prod) + staging #$ctrl (test-app/staging) + human #$human (no marker)"
 
       - name: "Cleanup: close superseded PRs (runs on GITHUB_TOKEN, like prod)"
-        uses: GlueOps/github-actions-cleanup-deployment-prs@main
+        uses: ./_actions/cleanup
         with:
           pr_number: ${{ env.SUPER_PR }}
           gh_token: ${{ secrets.GITHUB_TOKEN }}

@@ -27,6 +27,17 @@ and never store anything of value here.
 
 - **Manually:** Actions tab → `e2e` → "Run workflow".
 - **Nightly:** scheduled at 07:00 UTC.
+- **Against an unmerged action change (no merge needed):** dispatch with `bump_ref` /
+  `cleanup_ref` set to a branch, PR (`refs/pull/N/head`), or SHA — e.g.
+  `gh workflow run e2e.yml -f bump_ref=my-branch`. Defaults to `main`. See
+  [TESTING.md](./TESTING.md).
+
+## Editing or extending the tests
+
+See **[TESTING.md](./TESTING.md)** — a full maintainer's map of the suite: the design
+rules (never touch `main`, one deterministic job, self-cleaning), a step-by-step
+walkthrough, the variables passed between steps, editing gotchas, a recipe for adding new
+cases, and a debugging table of common failures.
 
 ## How this repo is configured
 
