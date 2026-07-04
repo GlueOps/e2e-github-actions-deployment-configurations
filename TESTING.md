@@ -135,7 +135,7 @@ via `$GITHUB_ENV` (see §7).
 
 | # | Step | What it does / asserts |
 |---|------|------------------------|
-| 1 | **Checkout** | Needed only so `open-deploy-pr.sh` is on disk. |
+| 1 | **Checkout** (×3) | Checks out this repo (for `open-deploy-pr.sh`), then the **bump** and **cleanup** action repos at `bump_ref` / `cleanup_ref` (default `main`) into `_actions/bump` and `_actions/cleanup`. Later steps run them via `uses: ./_actions/…`. |
 | 2 | **Setup: clear leftovers** | Before doing anything, closes every open PR that has the marker **or** whose head branch starts with `e2e/` (catches the marker-less human control), and deletes the known `e2e/*` control branches. Makes the run idempotent against prior failures. |
 | 3 | **Bump** (`id: bump`) | Runs `bump` for `test-app/prod`, PR mode. Mints the scoped App token, edits `values.yaml`, opens a deploy PR. |
 | 4 | **Assert bump created** | Asserts `action == created-pr`; the PR body has the correct marker; the branch's `values.yaml` has the new tag **and** still contains `e2e-sentinel-comment` (comment preservation). **Sets** `BUMP_PR`, `BUMP_TAG`, `BUMP_BRANCH`. |
@@ -180,10 +180,19 @@ across steps (each step is a fresh shell).
 
 ## 8. Invariants & gotchas when editing
 
-- **`@main` coupling.** The workflow uses `@main` of both actions (a deliberate nightly
-  regression signal). The step-8 assertion "title contains `other-app`" needs the bump
-  `appName`-in-title behavior on `main`. If you point at an older ref, that assertion may
-  fail. Consider pinning to a release SHA once one exists.
+- **Which action code runs (the `bump_ref` / `cleanup_ref` inputs).** The actions are
+  **checked out at a ref and run locally** via `uses: ./_actions/bump` and
+  `./_actions/cleanup` (see §9's "test an unmerged change"). Defaults + `schedule` use
+  `main`. Because `uses:` can't take an expression, this checkout-then-local-`uses` pattern
+  is the mechanism — don't revert it to `uses: <org>/<repo>@main`, or you lose the ability
+  to test unmerged refs. Note assertions test whatever ref you point at: e.g. step 8's
+  "title contains `other-app`" only passes on a ref that has the bump `appName`-in-title
+  behavior.
+- **The ref's committed `dist/` is what runs.** These actions ship a prebuilt `dist/`
+  bundle and GitHub runs *that*, not the source. So testing a branch/PR runs its
+  **committed** `dist/` — if the branch's source changed but `dist/` wasn't rebuilt, you're
+  testing stale code. (Each action's `build-dist` workflow keeps `dist/` current on its
+  PRs, so this is normally a non-issue.)
 - **Tag is a SHA here.** Because we trigger via `workflow_dispatch`/`schedule`, the bumped
   tag is a 7-char SHA, and it's the **same** for `test-app` and `other-app` in one run
   (same commit). That's fine — apps are distinguished by app+env, not tag. Don't assert on
@@ -237,7 +246,22 @@ sure `Teardown` cleans up whatever you create. Then `actionlint` the workflow an
 ## 10. Running & debugging
 
 - **Run it:** Actions tab → `e2e` → **Run workflow** (`workflow_dispatch`), or wait for the
-  nightly `schedule`. Locally you can trigger it with `gh workflow run e2e.yml`.
+  nightly `schedule`. From the CLI: `gh workflow run e2e.yml`.
+- **Test an unmerged action change (no merge required):** dispatch with the ref inputs
+  pointed at the branch/PR/SHA you want to validate — the action is checked out there and
+  run locally, so you get a full real-GitHub run *before* merging:
+  ```
+  # test a bump feature branch
+  gh workflow run e2e.yml -f bump_ref=my-feature-branch
+  # test a bump PR directly, and a cleanup branch at the same time
+  gh workflow run e2e.yml -f bump_ref=refs/pull/42/head -f cleanup_ref=some-branch
+  ```
+  Omitted inputs default to `main`. Reminder: the ref's **committed `dist/`** is what runs
+  (see §8).
+- **Test a change to THIS workflow (no merge required):** `workflow_dispatch` can run the
+  workflow file from any branch — push your branch and
+  `gh workflow run e2e.yml --ref my-workflow-branch [-f bump_ref=…]`. (`schedule` only ever
+  runs the default branch.)
 - **Lint before pushing:** `actionlint .github/workflows/e2e.yml` (it also shellchecks the
   embedded `run:` scripts) and `shellcheck .github/e2e/open-deploy-pr.sh`.
 - **Common failures and what they mean:**
