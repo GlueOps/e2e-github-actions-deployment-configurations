@@ -5,9 +5,14 @@ human or agent can confidently edit, refactor, or extend it. It complements the
 [README](./README.md) (which covers purpose + setup); this file is the maintainer's map
 of the test itself.
 
-Everything lives in one workflow: [`.github/workflows/e2e.yml`](./.github/workflows/e2e.yml),
-with one helper script [`.github/e2e/open-deploy-pr.sh`](./.github/e2e/open-deploy-pr.sh)
-and two fixture files under [`apps/`](./apps).
+The primary suite lives in one workflow:
+[`.github/workflows/e2e.yml`](./.github/workflows/e2e.yml), with one helper script
+[`.github/e2e/open-deploy-pr.sh`](./.github/e2e/open-deploy-pr.sh) and fixture files under
+[`apps/`](./apps). §1–§10 below are about that suite.
+
+A **second, event-driven suite** (`full-flow.yml` + `full-flow-bump.yml` +
+`full-flow-cleanup.yml`) exercises the real GitHub event cascade that the deterministic
+suite deliberately can't — see **§11**.
 
 ---
 
@@ -19,7 +24,9 @@ destructive.
 1. **One deterministic job, no async.** The entire flow is a single job that runs steps
    top-to-bottom. It never waits on a webhook/event cascade. The key enabler: the
    **cleanup action accepts an explicit `pr_number` input**, so we drive it synchronously
-   instead of triggering it via `on: pull_request`.
+   instead of triggering it via `on: pull_request`. *(The trade-off — no real event
+   triggers, tag is always a SHA — is exactly what the separate event-driven full-flow
+   suite in §11 covers. Keep the two apart: don't make **this** suite async.)*
 2. **Never modify `main`.** `bump` and `cleanup` only ever touch *feature branches*, so the
    `main` baseline (the fixture `values.yaml` files) stays constant across runs. This is
    what makes the test re-runnable and deterministic. **Do not add a step that commits to,
@@ -274,3 +281,88 @@ sure `Teardown` cleans up whatever you create. Then `actionlint` the workflow an
   | Step 11: "CROSS-APP/ENV ISOLATION FAILED" | cleanup closed a PR it shouldn't have — a real `isSuperseded` regression. Inspect the marker on the wrongly-closed PR. |
   | Step 11: "HUMAN-PR SAFETY FAILED" | cleanup closed a marker-less PR — a serious safety regression in cleanup's marker gating. |
   | A red **GlueOps Standard Checks** on a transient deploy PR | expected/harmless — the org's conventional-commit check runs on the deploy PRs bump opens; those PRs are closed by cleanup/teardown. It does **not** fail the e2e job. |
+
+---
+
+## 11. Event-driven full flow (the async complement)
+
+The deterministic suite (§1–§10) trades fidelity for stability: it calls the actions
+directly, so it never fires a real `release` or `pull_request` event, and the bumped tag
+is always a SHA fallback. This second suite fills exactly that gap — it drives the **real
+production cascade** and asserts on it:
+
+```
+full-flow.yml (driver: dispatch / nightly)
+  │  mints an App-installation token, publishes a `flow-e2e-*` release  ─┐
+  │                                                                      │ App-token events
+  ▼                                                                      │ trigger workflows
+full-flow-bump.yml   (on: release)      → bump opens a flow-app deploy PR ┘ (GITHUB_TOKEN's don't)
+  │                                        with its own App token  ──────┐
+  ▼                                                                      │
+full-flow-cleanup.yml (on: pull_request) → cleanup closes the superseded PR
+```
+
+### What it proves that §1–§10 can't
+- **bump computes the tag from the release name** (the production semver path), not the
+  `sha[:7]` fallback. The driver publishes releases with already-valid tags (`flow-e2e-…`),
+  so the deploy PR's marker tag must equal the release tag exactly — a SHA fallback would
+  not.
+- **cleanup is driven by a real `pull_request` event**, not a synchronous `pr_number`
+  input. Nothing in the driver closes the first PR; only `full-flow-cleanup.yml`, fired by
+  the event on the second (superseding) PR, can.
+- **The property the whole design rests on, proven live:** App-installation-token events
+  trigger workflows; `GITHUB_TOKEN` events don't. That's why the driver creates the release
+  with an App token (see below) and why bump opens PRs with an App token in production.
+
+### The pieces
+| File | Trigger | Role |
+|------|---------|------|
+| `full-flow.yml` | `workflow_dispatch` + nightly `schedule` (03:30 UTC) | Driver: mints the App token, publishes two releases, polls + asserts the cascade, tears down. |
+| `.github/e2e/full-flow.sh` | — | The orchestration + assertions the driver runs. |
+| `.github/e2e/full-flow-teardown.sh` | — | Resets only full-flow state (flow-app PRs/branches, `flow-e2e-*` releases/tags). Run at the start (clean slate) and via `if: always()`. |
+| `full-flow-bump.yml` | `on: release` (tags `flow-e2e-*`) | This repo playing the **app repo**: a release triggers bump. |
+| `full-flow-cleanup.yml` | `on: pull_request` (branches `*/update-flow-app-*`) | This repo playing the **config repo**: the production cleanup workflow, verbatim. |
+| `apps/flow-app/envs/prod/values.yaml` | — | Dedicated fixture; only this suite touches it. |
+
+### How it stays out of the deterministic suite's way
+Both suites share the repo, so isolation is deliberate:
+- **Different app** (`flow-app`) → different `apps/` path and different `*/update-flow-app-*`
+  branch names.
+- **`full-flow-cleanup.yml` is gated** `if: contains(github.head_ref, 'update-flow-app-')`,
+  so it never runs on the deterministic suite's App-authored `test-app`/`other-app` PRs.
+- **`e2e.yml`'s setup/teardown skip `*/update-flow-app-*` branches**, so the hourly run
+  never closes an in-flight full-flow PR.
+- **Separate `concurrency` group** (`full-flow`) and its own nightly schedule.
+
+### Gotchas when editing
+- **The cascade can only be validated from `main`.** `full-flow-bump.yml` is `on: release`,
+  which always uses the workflow file on the **default branch**, and the `workflow_dispatch`
+  driver resolves the same way — so the release→bump→PR chain can't be exercised from a
+  feature branch the way you can dispatch `e2e.yml`. (`full-flow-cleanup.yml` is
+  `on: pull_request`, which *does* run from a PR's head branch — that's why you'll see it
+  trigger-and-skip on the very PR that adds it, which conveniently confirms the
+  `update-flow-app-` gate.) Merge first, then dispatch `full-flow.yml` to see the full
+  cascade live.
+- **It tests `@main` of both actions**, by design (post-merge / nightly confidence). To
+  validate an *unmerged* action change, use `e2e.yml`'s `bump_ref` / `cleanup_ref` — the
+  event cascade can't thread a per-run ref through a `release` payload.
+- **Tags must stay valid container tags** (lowercase `[a-z0-9-]`) so `sanitizeTag` is
+  identity and the marker-tag equality assertion holds. The driver derives them from
+  `github.run_id` + `run_attempt` for uniqueness without `Date.now`.
+- **Async means slower + flakier than §1–§10.** Each wait polls for up to 5 min. If GitHub
+  is slow to dispatch a triggered run, a step can time out — a retry usually passes. This
+  is the cost of real fidelity, and why it's nightly, not hourly.
+- **Never point `full-flow-cleanup.yml` at all branches.** Dropping the `if` gate would let
+  it fire on (and no-op across) every PR in the repo, including the deterministic suite's —
+  harmless but noisy, and it muddies which suite owns what.
+
+### Running & debugging
+- **Run it:** `gh workflow run full-flow.yml` (or Actions tab → `full-flow-e2e` → Run
+  workflow), or wait for the nightly schedule. Watch three workflows light up in order:
+  `full-flow-e2e` → `full-flow-bump` → `full-flow-cleanup`.
+- **If it times out waiting for a deploy PR:** the release didn't trigger `full-flow-bump`.
+  Check the driver used the **App token** (not `GITHUB_TOKEN`) to publish the release, and
+  that the release tag starts with `flow-e2e-`.
+- **If the superseded PR never closes:** the `pull_request` event didn't reach
+  `full-flow-cleanup` — check its `if` gate matches the flow-app branch, and that bump
+  opened the PR with an App token (a `GITHUB_TOKEN`-authored PR wouldn't trigger it).

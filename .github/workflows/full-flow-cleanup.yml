@@ -1,0 +1,29 @@
+name: full-flow-cleanup
+
+# The other half of the real cascade — this is EXACTLY the workflow the docs tell
+# customers to add to their deployment-configurations repo. When bump opens (or updates)
+# a flow-app deploy PR with its App token, that PR event fires this, and cleanup — on the
+# repo's plain GITHUB_TOKEN, like prod — closes any superseded flow-app/prod deploy PR.
+#
+# Gated to flow-app branches only, so it never runs on the deterministic e2e.yml suite's
+# own App-authored PRs (test-app / other-app). Cleanup is safe either way (it only ever
+# touches marker'd, superseded, same-app+env PRs), but scoping keeps the two suites from
+# interleaving. Always runs cleanup@main; use e2e.yml's cleanup_ref to test an unmerged change.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write # GITHUB_TOKEN: delete superseded branches
+  pull-requests: write # GITHUB_TOKEN: close superseded PRs
+
+jobs:
+  cleanup:
+    if: contains(github.head_ref, 'update-flow-app-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Close superseded flow-app deploy PRs (GITHUB_TOKEN, like prod)"
+        uses: GlueOps/github-actions-cleanup-deployment-prs@main
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          gh_token: ${{ secrets.GITHUB_TOKEN }}

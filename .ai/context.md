@@ -34,9 +34,17 @@ this live — including that a marker-less PR survives.
 
 ## How the e2e is built
 
-One deterministic, self-cleaning job; no async event cascades (the key enabler is that
-`cleanup` takes an explicit `pr_number` input, so it's driven synchronously). It never
-modifies `main`. It defaults to `@main` of both actions but can run any branch/PR/SHA via the
-`bump_ref` / `cleanup_ref` workflow inputs. Full details in [TESTING.md](../TESTING.md).
+Two suites (full details in [TESTING.md](../TESTING.md)):
+
+- **`e2e.yml` (primary)** — one deterministic, self-cleaning job; no async event cascades
+  (the key enabler is that `cleanup` takes an explicit `pr_number` input, so it's driven
+  synchronously). Never modifies `main`. Defaults to `@main` of both actions but can run any
+  branch/PR/SHA via the `bump_ref` / `cleanup_ref` inputs.
+- **`full-flow.yml` (event-driven)** — drives the real production cascade
+  (`release` → bump → deploy PR → `pull_request` → cleanup) to cover what the synchronous
+  suite can't: the release-name tag path and event-triggered cleanup. It owns the `flow-app`
+  fixture, mints an App-installation token to publish releases (App-token events trigger
+  workflows; `GITHUB_TOKEN`'s don't), and is kept isolated from `e2e.yml`. See
+  [TESTING.md §11](../TESTING.md).
 
 Sibling repos and how they connect: [related-repos.md](./related-repos.md).

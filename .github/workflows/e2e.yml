@@ -76,6 +76,8 @@ jobs:
           for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
             body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
             branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+            # Leave the event-driven full-flow suite's PRs alone — it owns flow-app.
+            case "$branch" in */update-flow-app-*) continue ;; esac
             case "$branch" in e2e/*) is_e2e=1 ;; *) is_e2e=0 ;; esac
             if printf '%s' "$body" | grep -q 'glueops-deploy:' || [ "$is_e2e" = 1 ]; then
               echo "closing leftover e2e PR #$pr (branch $branch)"
@@ -237,6 +239,8 @@ jobs:
           for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
             body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
             branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+            # Leave the event-driven full-flow suite's PRs alone — it owns flow-app.
+            case "$branch" in */update-flow-app-*) continue ;; esac
             case "$branch" in e2e/*) is_e2e=1 ;; *) is_e2e=0 ;; esac
             if printf '%s' "$body" | grep -q 'glueops-deploy:' || [ "$is_e2e" = 1 ]; then
               gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null 2>&1 || true
