@@ -1,0 +1,5 @@
+# GlueOps e2e fixture — a SECOND app, to prove monorepo cross-app isolation.
+# Safe to overwrite. DO NOT use for real deployments.
+image:
+  repository: ghcr.io/glueops/e2e-other-app  # e2e-sentinel-comment: must survive a tag bump
+  tag: "baseline"

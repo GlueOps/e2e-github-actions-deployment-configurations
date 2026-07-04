@@ -15,8 +15,11 @@ and never store anything of value here.
 1. **bump** mints a scoped App installation token, edits `image.tag` in `values.yaml`
    **preserving comments**, and opens a PR carrying the `glueops-deploy` marker.
 2. Re-running **bump** is idempotent — it reuses the same PR (`updated-pr`), no duplicate.
-3. **cleanup** (running on `GITHUB_TOKEN`, exactly like production) closes a superseded
-   deploy PR and deletes its branch, leaving the newer PR open.
+3. **Monorepo:** a second app (`other-app`) bumped from the same repo gets its own
+   **distinct, app-named** PR (`chore(deploy): other-app …`, not the repo name).
+4. **cleanup** (running on `GITHUB_TOKEN`, exactly like production) closes **only** the
+   superseded same-app-and-env PR and deletes its branch — a **different app**
+   (`other-app/prod`) and a **different env** (`test-app/staging`) stay open (isolation).
 
 ## Running it
 
