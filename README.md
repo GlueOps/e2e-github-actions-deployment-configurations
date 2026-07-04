@@ -20,6 +20,8 @@ and never store anything of value here.
 4. **cleanup** (running on `GITHUB_TOKEN`, exactly like production) closes **only** the
    superseded same-app-and-env PR and deletes its branch — a **different app**
    (`other-app/prod`) and a **different env** (`test-app/staging`) stay open (isolation).
+5. **Human/bot safety:** a marker-less PR (no `glueops-deploy` marker, standing in for a
+   human or unrelated-bot PR) is **never touched** by cleanup — it stays open.
 
 ## Running it
 

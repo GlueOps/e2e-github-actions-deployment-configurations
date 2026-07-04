@@ -29,6 +29,7 @@ env:
   VALUES_PATH: apps/test-app/envs/prod/values.yaml
   SUPER_BRANCH: e2e/super
   STAGING_BRANCH: e2e/ctrl-staging
+  HUMAN_BRANCH: e2e/ctrl-human
 
 jobs:
   e2e:
@@ -37,19 +38,22 @@ jobs:
       - name: Checkout (for the control-PR helper script)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: "Setup: clear leftover deploy PRs + branches from prior runs"
+      - name: "Setup: clear leftover e2e PRs + branches from prior runs"
         run: |
           set -euo pipefail
+          # Close leftover e2e PRs: deploy PRs (marker) AND control PRs (e2e/ branch,
+          # incl. the marker-less human control).
           for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
             body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
-            if printf '%s' "$body" | grep -q 'glueops-deploy:'; then
-              branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
-              echo "closing leftover deploy PR #$pr (branch $branch)"
-              gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null
+            branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+            case "$branch" in e2e/*) is_e2e=1 ;; *) is_e2e=0 ;; esac
+            if printf '%s' "$body" | grep -q 'glueops-deploy:' || [ "$is_e2e" = 1 ]; then
+              echo "closing leftover e2e PR #$pr (branch $branch)"
+              gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null 2>&1 || true
               gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
             fi
           done
-          for b in "$SUPER_BRANCH" "$STAGING_BRANCH"; do
+          for b in "$SUPER_BRANCH" "$STAGING_BRANCH" "$HUMAN_BRANCH"; do
             gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null 2>&1 || true
           done
 
@@ -144,14 +148,26 @@ jobs:
             || { echo "other-app marker missing/mismatched"; exit 1; }
           echo "✅ second app PR #$OP is distinct + titled by app name"
 
-      - name: "Setup isolation controls: superseding (same app+env) + different-env PRs"
+      - name: "Setup isolation controls: superseding + different-env + marker-less human PR"
         run: |
           set -euo pipefail
           super=$(bash .github/e2e/open-deploy-pr.sh "$SUPER_BRANCH" test-app prod e2e-super)
           ctrl=$(bash .github/e2e/open-deploy-pr.sh "$STAGING_BRANCH" test-app staging e2e-staging)
-          { echo "SUPER_PR=$super"; echo "STAGING_PR=$ctrl"; } >> "$GITHUB_ENV"
+
+          # A marker-LESS PR standing in for a human / unrelated-bot PR. cleanup must
+          # never touch a PR without the glueops-deploy marker — this proves it live.
+          base=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$HUMAN_BRANCH" -f sha="$base" >/dev/null
+          hc=$(printf 'e2e human-PR control — intentionally NO deploy marker.\n' | base64 -w0)
+          gh api -X PUT "repos/$REPO/contents/e2e/human-note.txt" \
+            -f message="docs: e2e human-control note" -f content="$hc" -f branch="$HUMAN_BRANCH" >/dev/null
+          human=$(gh api -X POST "repos/$REPO/pulls" \
+            -f title="docs: unrelated human PR (e2e control)" -f head="$HUMAN_BRANCH" -f base=main \
+            -f body="A normal PR with no glueops-deploy marker. Cleanup must never close this." --jq '.number')
+
+          { echo "SUPER_PR=$super"; echo "STAGING_PR=$ctrl"; echo "HUMAN_PR=$human"; } >> "$GITHUB_ENV"
           test "$super" -gt "$BUMP_PR" || { echo "super PR #$super is not newer than bump PR #$BUMP_PR"; exit 1; }
-          echo "✅ super #$super (test-app/prod) + staging control #$ctrl (test-app/staging)"
+          echo "✅ super #$super (test-app/prod) + staging #$ctrl (test-app/staging) + human #$human (no marker)"
 
       - name: "Cleanup: close superseded PRs (runs on GITHUB_TOKEN, like prod)"
         uses: GlueOps/github-actions-cleanup-deployment-prs@main
@@ -179,7 +195,10 @@ jobs:
           # DIFFERENT ENV (test-app/staging) must survive — cross-env isolation
           test "$(gh api "repos/$REPO/pulls/$STAGING_PR" --jq '.state')" = "open" \
             || { echo "CROSS-ENV ISOLATION FAILED: test-app/staging PR #$STAGING_PR was closed"; exit 1; }
-          echo "✅ isolation: closed only test-app/prod older PR; other-app/prod (#$OTHER_PR) + test-app/staging (#$STAGING_PR) survived"
+          # MARKER-LESS human/bot PR must survive — the core safety guarantee
+          test "$(gh api "repos/$REPO/pulls/$HUMAN_PR" --jq '.state')" = "open" \
+            || { echo "HUMAN-PR SAFETY FAILED: marker-less PR #$HUMAN_PR was closed!"; exit 1; }
+          echo "✅ isolation: closed only test-app/prod older PR; other-app/prod (#$OTHER_PR), test-app/staging (#$STAGING_PR), and marker-less human PR (#$HUMAN_PR) all survived"
 
       - name: "Teardown: close e2e PRs + delete branches (always)"
         if: always()
@@ -187,13 +206,14 @@ jobs:
           set -euo pipefail
           for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
             body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
-            if printf '%s' "$body" | grep -q 'glueops-deploy:'; then
-              branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+            branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+            case "$branch" in e2e/*) is_e2e=1 ;; *) is_e2e=0 ;; esac
+            if printf '%s' "$body" | grep -q 'glueops-deploy:' || [ "$is_e2e" = 1 ]; then
               gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null 2>&1 || true
               gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
             fi
           done
-          for b in "$SUPER_BRANCH" "$STAGING_BRANCH"; do
+          for b in "$SUPER_BRANCH" "$STAGING_BRANCH" "$HUMAN_BRANCH"; do
             gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null 2>&1 || true
           done
           echo "✅ teardown complete"
