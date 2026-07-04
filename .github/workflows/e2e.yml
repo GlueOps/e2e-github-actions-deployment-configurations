@@ -1,0 +1,154 @@
+name: e2e
+
+# Real-GitHub smoke test for the GlueOps Deployment actions. Exercises the merged
+# @main of both actions against this throwaway fixture repo end to end:
+#   1. bump mints a scoped App token, edits values.yaml (comment-preserving), opens a PR
+#   2. re-running bump is idempotent (reuses the PR, no duplicate)
+#   3. cleanup (on GITHUB_TOKEN, like prod) closes a superseded PR + deletes its branch
+# Deterministic and self-cleaning: one job, no async event cascades. Safe to re-run.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * *" # nightly 07:00 UTC
+
+# Serialize runs — the job mutates shared repo state (branches / PRs).
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: write # GITHUB_TOKEN: setup/teardown refs + cleanup branch deletes
+  pull-requests: write # GITHUB_TOKEN: open/close PRs + cleanup
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  REPO: ${{ github.repository }}
+  CONFIG_REPO: e2e-github-actions-deployment-configurations
+  VALUES_PATH: apps/test-app/envs/prod/values.yaml
+  SUPER_BRANCH: e2e/super
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Setup: clear leftover deploy PRs + branches from prior runs"
+        run: |
+          set -euo pipefail
+          for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
+            body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
+            if printf '%s' "$body" | grep -q 'glueops-deploy:'; then
+              branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+              echo "closing leftover deploy PR #$pr (branch $branch)"
+              gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
+            fi
+          done
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$SUPER_BRANCH" >/dev/null 2>&1 || true
+
+      - name: "Bump: open a deploy PR (mints scoped App token, edits values.yaml)"
+        id: bump
+        uses: GlueOps/github-actions-bump-deployment-tag@main
+        with:
+          ENV: prod
+          CREATE_PR: "true"
+          DEPLOYMENT_CONFIGS_REPO: ${{ env.CONFIG_REPO }}
+          DEPLOYMENT_CONFIGS_APP_NAME: test-app
+          app-id: ${{ vars.GLUEOPS_DEPLOYMENT_APP_ID }}
+          private-key: ${{ secrets.GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY }}
+
+      - name: "Assert: bump created a PR with a valid marker + preserved comments"
+        run: |
+          set -euo pipefail
+          got='${{ steps.bump.outputs.action }}'
+          test "$got" = "created-pr" || { echo "expected action=created-pr, got '$got'"; exit 1; }
+          PR='${{ steps.bump.outputs.pr-number }}'
+          TAG='${{ steps.bump.outputs.tag }}'
+          test -n "$PR" && test -n "$TAG"
+          branch=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.ref')
+          {
+            echo "BUMP_PR=$PR"
+            echo "BUMP_TAG=$TAG"
+            echo "BUMP_BRANCH=$branch"
+          } >> "$GITHUB_ENV"
+
+          body=$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""')
+          printf '%s' "$body" | grep -q "glueops-deploy:{\"app\":\"test-app\",\"env\":\"prod\",\"tag\":\"$TAG\"}" \
+            || { echo "marker missing/mismatched in PR #$PR body"; exit 1; }
+
+          file=$(gh api "repos/$REPO/contents/$VALUES_PATH?ref=$branch" --jq '.content' | base64 -d)
+          echo "--- values.yaml on branch $branch ---"; printf '%s\n' "$file"
+          printf '%s' "$file" | grep -Eq "tag:[[:space:]]*[\"']?${TAG}[\"']?" \
+            || { echo "image.tag was not updated to $TAG"; exit 1; }
+          printf '%s' "$file" | grep -q 'e2e-sentinel-comment' \
+            || { echo "comment was NOT preserved by the YAML edit"; exit 1; }
+          echo "✅ bump: created PR #$PR, tag=$TAG, marker ok, comment preserved"
+
+      - name: "Bump again (should be idempotent — reuse the PR, no duplicate)"
+        id: bump2
+        uses: GlueOps/github-actions-bump-deployment-tag@main
+        with:
+          ENV: prod
+          CREATE_PR: "true"
+          DEPLOYMENT_CONFIGS_REPO: ${{ env.CONFIG_REPO }}
+          DEPLOYMENT_CONFIGS_APP_NAME: test-app
+          app-id: ${{ vars.GLUEOPS_DEPLOYMENT_APP_ID }}
+          private-key: ${{ secrets.GLUEOPS_DEPLOYMENT_APP_PRIVATE_KEY }}
+
+      - name: "Assert: the re-run reused the same PR (updated-pr, no dupe)"
+        run: |
+          set -euo pipefail
+          got='${{ steps.bump2.outputs.action }}'
+          test "$got" = "updated-pr" || { echo "expected action=updated-pr on re-run, got '$got'"; exit 1; }
+          test '${{ steps.bump2.outputs.pr-number }}' = "$BUMP_PR" \
+            || { echo "re-run opened a DIFFERENT PR than #$BUMP_PR"; exit 1; }
+          echo "✅ bump idempotent: reused PR #$BUMP_PR"
+
+      - name: "Setup Phase B: open a superseding deploy PR (same app+env, newer)"
+        run: |
+          set -euo pipefail
+          base=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$SUPER_BRANCH" -f sha="$base" >/dev/null
+          fsha=$(gh api "repos/$REPO/contents/$VALUES_PATH?ref=$SUPER_BRANCH" --jq '.sha')
+          newc=$(printf '# GlueOps e2e test fixture\nimage:\n  repository: ghcr.io/glueops/e2e-test-app  # e2e-sentinel-comment\n  tag: "e2e-super"\n' | base64 -w0)
+          gh api -X PUT "repos/$REPO/contents/$VALUES_PATH" \
+            -f message="e2e: superseding change" -f content="$newc" -f sha="$fsha" -f branch="$SUPER_BRANCH" >/dev/null
+          marker='<!-- glueops-deploy:{"app":"test-app","env":"prod","tag":"e2e-super"} -->'
+          body=$(printf 'Superseding deploy PR for the e2e smoke test.\n\n%s\n' "$marker")
+          super=$(gh api -X POST "repos/$REPO/pulls" \
+            -f title="e2e superseding PR" -f head="$SUPER_BRANCH" -f base=main -f body="$body" --jq '.number')
+          echo "SUPER_PR=$super" >> "$GITHUB_ENV"
+          test "$super" -gt "$BUMP_PR" || { echo "super PR #$super is not newer than bump PR #$BUMP_PR"; exit 1; }
+          echo "✅ opened superseding PR #$super"
+
+      - name: "Cleanup: close superseded PRs (runs on GITHUB_TOKEN, like prod)"
+        uses: GlueOps/github-actions-cleanup-deployment-prs@main
+        with:
+          pr_number: ${{ env.SUPER_PR }}
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Assert: the earlier bump PR is closed + its branch deleted"
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$REPO/pulls/$BUMP_PR" --jq '.state')
+          test "$st" = "closed" || { echo "bump PR #$BUMP_PR should be closed, is '$st'"; exit 1; }
+          if gh api "repos/$REPO/git/ref/heads/$BUMP_BRANCH" >/dev/null 2>&1; then
+            echo "bump branch '$BUMP_BRANCH' should have been deleted but still exists"; exit 1
+          fi
+          st2=$(gh api "repos/$REPO/pulls/$SUPER_PR" --jq '.state')
+          test "$st2" = "open" || { echo "super PR #$SUPER_PR should still be open, is '$st2'"; exit 1; }
+          echo "✅ cleanup: superseded PR #$BUMP_PR closed + branch deleted; #$SUPER_PR still open"
+
+      - name: "Teardown: close e2e PRs + delete branches (always)"
+        if: always()
+        run: |
+          set -euo pipefail
+          for pr in $(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); do
+            body=$(gh api "repos/$REPO/pulls/$pr" --jq '.body // ""')
+            if printf '%s' "$body" | grep -q 'glueops-deploy:'; then
+              branch=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.ref')
+              gh api -X PATCH "repos/$REPO/pulls/$pr" -f state=closed >/dev/null 2>&1 || true
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null 2>&1 || true
+            fi
+          done
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$SUPER_BRANCH" >/dev/null 2>&1 || true
+          echo "✅ teardown complete"
