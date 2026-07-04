@@ -246,7 +246,7 @@ sure `Teardown` cleans up whatever you create. Then `actionlint` the workflow an
 ## 10. Running & debugging
 
 - **Run it:** Actions tab → `e2e` → **Run workflow** (`workflow_dispatch`), or wait for the
-  nightly `schedule`. From the CLI: `gh workflow run e2e.yml`.
+  hourly `schedule`. From the CLI: `gh workflow run e2e.yml`.
 - **Test an unmerged action change (no merge required):** dispatch with the ref inputs
   pointed at the branch/PR/SHA you want to validate — the action is checked out there and
   run locally, so you get a full real-GitHub run *before* merging:

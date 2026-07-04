@@ -26,7 +26,7 @@ and never store anything of value here.
 ## Running it
 
 - **Manually:** Actions tab → `e2e` → "Run workflow".
-- **Nightly:** scheduled at 07:00 UTC.
+- **Hourly:** scheduled every hour (at :17 UTC).
 - **Against an unmerged action change (no merge needed):** dispatch with `bump_ref` /
   `cleanup_ref` set to a branch, PR (`refs/pull/N/head`), or SHA — e.g.
   `gh workflow run e2e.yml -f bump_ref=my-branch`. Defaults to `main`. See
