@@ -2,5 +2,5 @@
 # Only the full-flow suite (full-flow.yml + full-flow-bump.yml) touches this app; the
 # deterministic e2e.yml never does. See TESTING.md → "Event-driven full flow".
 image:
-  repository: ghcr.io/glueops/e2e-flow-app  # flow-sentinel-comment: this MUST survive a tag bump
-  tag: "baseline"
+  repository: ghcr.io/glueops/e2e-flow-app # flow-sentinel-comment: this MUST survive a tag bump
+  tag: "flow-e2e-29732096603-1-a"
