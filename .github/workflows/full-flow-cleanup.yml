@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Close superseded flow-app deploy PRs (GITHUB_TOKEN, like prod)"
-        uses: GlueOps/github-actions-cleanup-deployment-prs@main
+        uses: GlueOps/github-actions-cleanup-deployment-prs@f1d41d11f93a5dcb86fc04bcb534951a0143a3cf # main
         with:
           pr_number: ${{ github.event.pull_request.number }}
           gh_token: ${{ secrets.GITHUB_TOKEN }}
