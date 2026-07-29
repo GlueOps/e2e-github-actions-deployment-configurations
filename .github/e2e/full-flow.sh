@@ -62,6 +62,17 @@ assert_values() { # <branch> <tag>
 
 branch_exists() { gh api "repos/$REPO/git/ref/heads/$1" >/dev/null 2>&1; }
 
+# Poll up to 60s (60 x 1s) for a branch to disappear. cleanup closes the PR and deletes its
+# ref in two SEPARATE API calls, so the "PR is closed" poll below can observe the close
+# before the deleteRef lands — a one-shot branch check races it and flakes.
+wait_branch_gone() { # <branch>
+  for _ in $(seq 1 60); do
+    branch_exists "$1" || return 0
+    sleep 1
+  done
+  return 1
+}
+
 echo "== full flow: TAG1=$TAG1  TAG2=$TAG2 =="
 bash "$HERE/full-flow-teardown.sh"   # clean slate
 
@@ -95,7 +106,7 @@ wait_for "cleanup to close superseded PR #$PR1" bash -c \
 echo "✅ event-driven cleanup closed superseded PR #$PR1"
 
 # Superseded branch deleted; the newer PR and its branch survive.
-! branch_exists "$BR1" || { echo "❌ superseded branch $BR1 should have been deleted"; exit 1; }
+wait_branch_gone "$BR1" || { echo "❌ superseded branch $BR1 should have been deleted"; exit 1; }
 [ "$(pr_state "$PR2")" = "open" ] || { echo "❌ newer PR #$PR2 should still be open"; exit 1; }
 branch_exists "$BR2" || { echo "❌ newer branch $BR2 should still exist"; exit 1; }
 echo "✅ superseded branch deleted; newer PR #$PR2 + branch survive"

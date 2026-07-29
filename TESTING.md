@@ -359,6 +359,11 @@ Both suites share the repo, so isolation is deliberate:
   concurrent with) the deterministic suite and bounded by `timeout-minutes: 30`. Because
   the shared group keeps only one *pending* run, a piled-up hourly run can occasionally be
   skipped — harmless at this frequency.
+- **Never assert on cleanup's *side effects* with a one-shot check.** cleanup closes the PR
+  and deletes its branch in **two separate API calls**, so the "PR is closed" poll can win
+  the race and return before the `deleteRef` lands. Checking the branch immediately after
+  flaked ~1-in-10 runs (`❌ superseded branch … should have been deleted`) — hence
+  `wait_branch_gone`. Any new post-close assertion needs the same treatment: poll, don't peek.
 - **Never point `full-flow-cleanup.yml` at all branches.** Dropping the `if` gate would let
   it fire on (and no-op across) every PR in the repo, including the deterministic suite's —
   harmless but noisy, and it muddies which suite owns what.
@@ -373,3 +378,6 @@ Both suites share the repo, so isolation is deliberate:
 - **If the superseded PR never closes:** the `pull_request` event didn't reach
   `full-flow-cleanup` — check its `if` gate matches the flow-app branch, and that bump
   opened the PR with an App token (a `GITHUB_TOKEN`-authored PR wouldn't trigger it).
+- **If the superseded PR closed but its branch is still there** after `wait_branch_gone`'s
+  60s: that's a real cleanup bug (or a `deleteRef` failure), not the old race — check the
+  `full-flow-cleanup` run log for `Failed to clean up PR #…`.
